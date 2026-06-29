@@ -10,46 +10,54 @@ EMAIL = "24f1000023@ds.study.iitm.ac.in"
 ALLOWED_ORIGIN = "https://app-8hq25w.example.com"
 
 LIMIT = 11
-WINDOW = 10
+WINDOW = 10  # seconds
 
 app = FastAPI()
 
+# CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        ALLOWED_ORIGIN,
-    ],
+    allow_origin_regex=r"https://.*\.example\.com",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# Store request timestamps per client
 clients = {}
 
+
 @app.middleware("http")
-async def middleware(request: Request, call_next):
-
+async def request_context_and_rate_limit(request: Request, call_next):
+    # Request ID
     request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
-
-    # Store it BEFORE calling the endpoint
     request.state.request_id = request_id
 
-    client = request.headers.get("X-Client-Id", "anonymous")
+    # Client ID
+    client_id = request.headers.get("X-Client-Id", "anonymous")
 
     now = time.time()
 
-    if client not in clients:
-        clients[client] = []
+    if client_id not in clients:
+        clients[client_id] = []
 
-    clients[client] = [t for t in clients[client] if now - t < WINDOW]
+    # Remove timestamps older than 10 seconds
+    clients[client_id] = [
+        t for t in clients[client_id]
+        if now - t < WINDOW
+    ]
 
-    if len(clients[client]) >= LIMIT:
-        return JSONResponse(
+    # Rate limit
+    if len(clients[client_id]) >= LIMIT:
+        response = JSONResponse(
             status_code=429,
             content={"detail": "Too Many Requests"},
         )
+        response.headers["Retry-After"] = str(WINDOW)
+        response.headers["X-Request-ID"] = request_id
+        return response
 
-    clients[client].append(now)
+    clients[client_id].append(now)
 
     response = await call_next(request)
 
@@ -57,10 +65,15 @@ async def middleware(request: Request, call_next):
 
     return response
 
+
 @app.get("/ping")
 def ping(request: Request):
-
     return {
         "email": EMAIL,
         "request_id": request.state.request_id
     }
+
+
+@app.get("/")
+def root():
+    return {"status": "ok"}
